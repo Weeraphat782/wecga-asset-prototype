@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WeCGA - Asset Management</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet">
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <header class="app-bar">
+    <div class="brand">
+      <span class="logo">W</span>
+      <span>WeCGA <span style="font-weight:400;opacity:.85">Asset Management</span></span>
+    </div>
+    <div class="spacer"></div>
+    <div id="barControls" style="display:flex;gap:14px;align-items:center"></div>
+  </header>
+  <nav class="nav" id="nav"></nav>
+  <main class="main" id="main"></main>
+
+  <!-- Load order matters: core -> data -> coverage -> views -->
+  <script src="js/core.js"></script>
+  <script src="js/seed.js"></script>
+  <script src="js/coverage.js"></script>
+  <script src="js/views/assets.js"></script>
+  <script src="js/views/intake.js"></script>
+  <script src="js/views/tagging.js"></script>
+  <script src="js/views/scan.js"></script>
+  <script src="js/views/handover.js"></script>
+  <script src="js/views/registration.js"></script>
+  <script src="js/views/movement.js"></script>
+  <script src="js/views/counts.js"></script>
+  <script src="js/views/mycount.js"></script>
+  <script src="js/views/reconcile.js"></script>
+  <script src="js/views/writeoff.js"></script>
+  <script src="js/views/dashboard.js"></script>
+  <script src="js/views/reports.js"></script>
+  <script src="js/views/admin.js"></script>
+  <script src="js/views/audit.js"></script>
+  <script src="js/views/coverage.js"></script>
+  <script>window.addEventListener('DOMContentLoaded', () => App.start());</script>
+</body>
+</html>
