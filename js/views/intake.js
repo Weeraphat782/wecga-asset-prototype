@@ -6,22 +6,43 @@
 (function () {
   const App = window.App, ui = App.ui, fmt = App.fmt;
 
-  // Mock PR/PO pipeline. PO-4500091231 mirrors App.store.sapLog (SAP-02).
-  const PURCHASE_ORDERS = [
-    { po: 'PO-4500091231', vendor: '\u0e1a\u0e08. Dell TH', item: 'Monitor Dell 27" U2723QE', qty: 1, company: 'AIS', delivery: 'Delivered - GR pending', createdAsset: 'A-006' },
-    { po: 'PO-4500091190', vendor: '\u0e1a\u0e08. ABC', item: 'Firewall Fortinet FG-100F', qty: 1, company: 'AIS', delivery: 'In transit' },
-    { po: 'PO-4500091255', vendor: '\u0e1a\u0e08. HP TH', item: 'Notebook HP EliteBook 840 G10', qty: 5, company: 'AIS', delivery: 'Ordered' },
-    { po: 'PO-4500091260', vendor: '\u0e1a\u0e08. Fiber TH', item: 'ONT Router GPON', qty: 10, company: 'BB', delivery: 'Delivered - GR pending', createdAsset: 'A-012' },
-    { po: 'PO-4500091277', vendor: '\u0e1a\u0e08. Toyota', item: 'Service Van Toyota Hiace', qty: 1, company: 'BB', delivery: 'In transit' },
-  ];
+  // Mock PR/PO pipeline lives in App.store.purchaseOrders (seed.js).
+  function poForCompany() {
+    return (App.store.purchaseOrders || []).filter(p => p.company === App.session.company);
+  }
+
+  function poAssetIds(r) {
+    if (r.createdAssets && r.createdAssets.length) return r.createdAssets;
+    if (r.createdAsset) return [r.createdAsset];
+    return [];
+  }
+
+  function poAssetsCell(r) {
+    const ids = poAssetIds(r);
+    if (!ids.length) return '<span class="muted">Pending Accounting</span>';
+    return ids.map(id => {
+      const a = App.asset(id);
+      return a
+        ? `<span class="mono">${App.esc(App.assetCode(a))}</span><div class="muted" style="font-size:12px">${App.esc([a.desc1, a.desc2].filter(Boolean).join(' '))}</div>`
+        : App.esc(id);
+    }).join('');
+  }
 
   let tab = 'prpo';
 
-  const deliveryChip = (s) => s.startsWith('Delivered') ? ui.chip(s, 'ok')
-    : s === 'In transit' ? ui.chip(s, 'info') : ui.chip(s, 'neutral');
+  const deliveryChip = (s, grPosted) => {
+    if (grPosted) return ui.chip('GR posted', 'ok');
+    return s.startsWith('Delivered') ? ui.chip(s, 'ok')
+      : s === 'In transit' ? ui.chip(s, 'info') : ui.chip(s, 'neutral');
+  };
 
-  function poForCompany() {
-    return PURCHASE_ORDERS.filter(p => p.company === App.session.company);
+  function grPending(p) {
+    return p.delivery.startsWith('Delivered') && !p.grPosted;
+  }
+
+  function grAction(p) {
+    if (p.grPosted) return ui.chip('GR posted', 'ok');
+    return `<button class="btn sm" data-act="gr" data-po="${App.esc(p.po)}">${App.icon('inventory')} Post GR</button>`;
   }
 
   /* ---------- Tab bodies ---------- */
@@ -36,7 +57,8 @@
           { key: 'vendor', label: 'Vendor' },
           { key: 'item', label: 'Item', cls: 'wrap' },
           { key: 'qty', label: 'Qty', cls: 'num' },
-          { key: 'delivery', label: 'Delivery', render: r => deliveryChip(r.delivery) },
+          { key: '_assets', label: 'Asset(s)', cls: 'wrap', render: r => poAssetsCell(r) },
+          { key: 'delivery', label: 'Delivery', render: r => deliveryChip(r.delivery, r.grPosted) },
         ],
         rows,
         empty: 'No open PR/PO for this company',
@@ -50,9 +72,9 @@
       <div class="pill-row" style="justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--md-outline-variant)">
         <div>
           <div><span class="mono">${App.esc(p.po)}</span> &nbsp; <b>${App.esc(p.item)}</b></div>
-          <div class="muted" style="font-size:12.5px">${App.esc(p.vendor)} - Qty ${p.qty}</div>
+          <div class="muted" style="font-size:12.5px">${App.esc(p.vendor)} - Qty ${p.qty}${poAssetIds(p).length ? ' - ' + poAssetIds(p).map(id => App.assetCode(App.asset(id) || { id })).join(', ') : ''}</div>
         </div>
-        <button class="btn sm" data-act="gr" data-po="${App.esc(p.po)}">${App.icon('inventory')} Post GR</button>
+        ${grAction(p)}
       </div>`).join('') : '<div class="muted">Nothing awaiting Goods Receipt right now.</div>';
 
     return ui.card({
@@ -83,8 +105,8 @@
       `Assets that come from <b>SAP</b> need <b>no WeCGA request or registration</b> (p.2 - requirement S1): Accounting creates the asset master and it flows into WeCGA automatically, then only awaits QR tagging. Found / non-SAP assets instead go through <a class="link" data-nav="#/registration">Manual Registration</a>.`)
     + ui.card({
       title: `${App.icon('playlist_add_check')} New assets from Accounting - awaiting QR tagging`,
-      sub: 'p.2 item 4 (I4): Accounting checks and creates the asset (Asset code, Cap.Date, Cost, buyer, PO). Each row is ready for the QR Tagging queue.',
-      actions: `<button class="btn tonal sm" data-nav="#/tagging">${App.icon('qr_code_2')} Open QR Tagging</button>`,
+      sub: 'p.2 item 4 (I4): Accounting checks and creates the asset (Asset code, Cap.Date, Cost, buyer, PO). Each row is ready for the Tagging queue.',
+      actions: `<button class="btn tonal sm" data-nav="#/tagging">${App.icon('qr_code_2')} Open Tagging</button>`,
       body: ui.table({
         columns: [
           { key: 'code', label: 'Asset code', render: r => `<span class="mono">${App.esc(App.assetCode(r))}</span>` },
@@ -92,7 +114,7 @@
           { key: 'capDate', label: 'Cap.Date', render: r => fmt.date(r.capDate) },
           { key: 'cost', label: 'Cost', cls: 'num', render: r => fmt.money(r.cost) },
           { key: 'tagStatus', label: 'Tag', render: r => ui.statusChip(r.tagStatus) },
-          { key: '_act', label: '', render: r => `<span class="pill-row"><button class="btn text sm" data-nav="#/assets/${r.id}">Detail</button><button class="btn tonal sm" data-nav="#/tagging/TK-0001">Tag</button></span>` },
+          { key: '_act', label: '', render: r => `<span class="pill-row"><button type="button" class="btn text sm" data-nav="#/assets/${r.id}">Detail</button><button type="button" class="btn tonal sm" data-act="tagThis" data-id="${r.id}">Tag</button></span>` },
         ],
         rows: queue,
         rowLink: r => '#/assets/' + r.id,
@@ -108,12 +130,12 @@
       const inbound = App.store.sapLog.filter(l => l.dir === 'inbound');
       const queue = App.store.assets.filter(a => a.source === 'SAP' && a.tagStatus === 'Not tagged' && a.companyCode === App.session.company);
 
-      const kpis = `<div class="grid cols-4">
-        ${ui.kpi({ label: 'Open PR/PO', value: poForCompany().length, icon: 'receipt_long' })}
-        ${ui.kpi({ label: 'Awaiting GR', value: poForCompany().filter(p => p.delivery.startsWith('Delivered')).length, icon: 'local_shipping', tone: 'warn' })}
-        ${ui.kpi({ label: 'New from Accounting (untagged)', value: queue.length, icon: 'playlist_add_check', tone: 'warn' })}
-        ${ui.kpi({ label: 'SAP inbound messages', value: inbound.length, icon: 'sync' })}
-      </div>`;
+      const stats = ui.statStrip([
+        { label: 'Open PR/PO', value: poForCompany().length, ic: 'receipt_long' },
+        { label: 'Awaiting GR', value: poForCompany().filter(grPending).length, ic: 'local_shipping' },
+        { label: 'New from Accounting (untagged)', value: queue.length, ic: 'playlist_add_check' },
+        { label: 'SAP inbound messages', value: inbound.length, ic: 'sync' },
+      ]);
 
       const body = tab === 'prpo' ? prpoBody() : tab === 'gr' ? grBody() : newAssetsBody();
 
@@ -121,7 +143,8 @@
         title: 'Procurement / SAP Inbound',
         sub: `Company <b>${comp}</b>. The procurement pipeline: PR/PO &rarr; delivery date confirmation &rarr; Goods Receipt &rarr; asset created by Accounting &rarr; QR tagging. <span class="muted">Modules M1, M2</span>`,
       })
-      + kpis
+      + ui.callout('warn', '<b>Out of AM scope (SOW Exclusion E5).</b> PR/PO/Goods Receipt live in SAP — this screen is a demo from the WeCGA requirements doc, not Component 3 deliverable.')
+      + stats
       + ui.tabs('intakeTabs', [
           { id: 'prpo', label: 'PR / PO' },
           { id: 'gr', label: 'Goods Receipt (GR)' },
@@ -134,8 +157,18 @@
 
       root.querySelectorAll('[data-act="gr"]').forEach(b => b.onclick = () => {
         const po = b.getAttribute('data-po');
+        const rec = (App.store.purchaseOrders || []).find(p => p.po === po);
+        if (!rec) { ui.toast('PO not found', 'error'); return; }
+        if (rec.grPosted) { ui.toast('GR already posted for this PO', 'info'); return; }
+        rec.grPosted = true;
+        rec.grPostedAt = new Date().toISOString();
         App.audit({ action: 'Goods Receipt posted', target: po, detail: 'GR posted in SAP (inbound)' });
         ui.toast('GR posted in SAP', 'inventory');
+        App.refresh();
+      });
+
+      root.querySelectorAll('[data-act="tagThis"]').forEach(b => b.onclick = () => {
+        App.startTagging(b.getAttribute('data-id'));
       });
 
       const confirm = root.querySelector('[data-act="confirmDate"]');
@@ -145,12 +178,9 @@
         const win = root.querySelector('[name="window"]').value;
         const notes = root.querySelector('[name="notes"]').value;
         if (!date) { ui.toast('Pick an expected delivery date first', 'error'); return; }
-        App.audit({
-          action: 'Delivery date confirmed - QR appointment booked',
-          target: po,
-          detail: `Expected ${fmt.date(date)} (${win})${notes ? ' - ' + notes : ''}`,
-        });
-        ui.toast('Delivery date confirmed - QR tagging appointment booked', 'event_available');
+        const poRecord = poForCompany().find(p => p.po === po);
+        if (!App.createTaggingFromAppointment) { ui.toast('Tagging module not loaded', 'error'); return; }
+        App.createTaggingFromAppointment({ po, expectedDate: date, window: win, notes, poRecord });
       };
     },
   });

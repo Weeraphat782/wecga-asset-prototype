@@ -64,14 +64,14 @@
       label: 'Disposal / Write-off', icon: 'delete_sweep', req: 'M9 - disposal report by track & status',
       build() {
         const t = companyTickets().filter(x => (x.type || '').startsWith('Write-off'));
-        const headers = ['Ticket', 'Track', 'Asset', 'Description', 'Cost', 'NBV', 'Status', 'Opened'];
+        const headers = ['Service request', 'Track', 'Asset', 'Description', 'Cost', 'NBV', 'Status', 'Opened'];
         const track = (x) => (x.type || '').replace('Write-off ', '') || '-';
         const rows = t.map(x => {
           const a = App.asset(x.assetId) || {};
           return [x.id, track(x), App.assetCode(a) || x.assetId, [a.desc1, a.desc2].filter(Boolean).join(' '), a.cost, a.nbv, x.status, fmt.date(x.created)];
         });
         const columns = [
-          { key: 'id', label: 'Ticket', render: x => `<span class="mono">${esc(x.id)}</span>` },
+          { key: 'id', label: 'Service request', render: x => `<span class="mono">${esc(x.id)}</span>` },
           { key: 'track', label: 'Track', render: x => ui.chip(track(x), track(x) === 'Lost' ? 'danger' : track(x) === 'Donation' ? 'ok' : 'info') },
           { key: 'asset', label: 'Asset', render: x => esc(App.assetCode(App.asset(x.assetId) || {}) || x.assetId) },
           { key: 'desc', label: 'Description', cls: 'wrap', render: x => { const a = App.asset(x.assetId) || {}; return esc([a.desc1, a.desc2].filter(Boolean).join(' ')); } },
@@ -88,10 +88,10 @@
       label: 'Movement', icon: 'swap_horiz', req: 'M9 - movement / transfer report',
       build() {
         const t = companyTickets().filter(x => MOVE_TYPES.includes(x.type));
-        const headers = ['Ticket', 'Type', 'Asset', 'From', 'To', 'Status', 'Opened'];
+        const headers = ['Service request', 'Type', 'Asset', 'From', 'To', 'Status', 'Opened'];
         const rows = t.map(x => [x.id, x.type, App.assetCode(App.asset(x.assetId) || {}) || x.assetId, x.fromOwner || '-', x.toOwner || '-', x.status, fmt.date(x.created)]);
         const columns = [
-          { key: 'id', label: 'Ticket', render: x => `<span class="mono">${esc(x.id)}</span>` },
+          { key: 'id', label: 'Service request', render: x => `<span class="mono">${esc(x.id)}</span>` },
           { key: 'type', label: 'Type', render: x => ui.chip(x.type, 'info') },
           { key: 'asset', label: 'Asset', render: x => esc(App.assetCode(App.asset(x.assetId) || {}) || x.assetId) },
           { key: 'from', label: 'From', render: x => esc(x.fromOwner || '-') },

@@ -47,7 +47,7 @@
     ]},
     { group: 'Handover (p.3, item 9)', items: [
       { id: 'H1', page: 3, text: 'Deliver to holder; receiver must accept in the system (traceability)', route: '#/handover' },
-      { id: 'H2', page: 3, text: 'Send per-item or as a list, via Email or as a WeCGA record', route: '#/handover' },
+      { id: 'H2', page: 3, text: 'Send per-item or as a list, via Email or as a WeCGA record', route: '#/handover/new' },
       { id: 'H3', page: 3, text: 'Owner = individual (email required) or organization (Head-of email)', route: '#/handover' },
     ]},
     { group: 'WeCGA capabilities (p.3, item 10)', items: [
@@ -65,14 +65,15 @@
       { id: 'R5', page: 4, text: 'No SAP registration; store in the WeCGA database', route: '#/registration' },
     ]},
     { group: 'Transfer process (p.5)', items: [
-      { id: 'T1', page: 5, text: 'Ticket to report transfer / receipt in WeCGA', route: '#/movement' },
+      { id: 'T1', page: 5, text: 'Service request to report transfer / receipt in WeCGA', route: '#/movement' },
       { id: 'T2', page: 5, text: 'Approval request to transferor-side authority', route: '#/movement' },
       { id: 'T3', page: 5, text: 'Approval request to receiver-side authority', route: '#/movement' },
       { id: 'T4', page: 5, text: 'Receiver accepts by scanning QR or pressing accept', route: '#/movement' },
       { id: 'T5', page: 5, text: 'Print paper record; GA Verify; update SAP; export Excel', route: '#/movement' },
+      { id: 'T6', page: 2, text: 'Notify moving / logistics team when transferring asset', route: '#/movement' },
     ]},
     { group: 'Loss (p.6)', items: [
-      { id: 'L1', page: 6, text: 'Ticket to report loss; user writes explanation memo, approval up the line to Head-of', route: '#/writeoff' },
+      { id: 'L1', page: 6, text: 'Service request to report loss; user writes explanation memo, approval up the line to Head-of', route: '#/writeoff' },
       { id: 'L2', page: 6, text: 'Asset Team checks cause, COST, NBV, compensate or not; attach compensation receipt; Accounting issues receipt', route: '#/writeoff' },
       { id: 'L3', page: 6, text: 'Theft: police daily-record copy attached; company asset needs POA + authorized signatory card', route: '#/writeoff' },
       { id: 'L4', page: 6, text: 'Unknown cause: resignation (supervisor/transferee memo) or disaster (fire/flood/earthquake)', route: '#/writeoff' },
@@ -80,19 +81,19 @@
     ]},
     { group: 'Write-off: sale (p.7)', items: [
       { id: 'WS1', page: 7, text: 'Damaged / not needed asset; insurance claim if any; claimed asset may keep being used (transfer while awaiting) or be sold', route: '#/writeoff' },
-      { id: 'WS2', page: 7, text: 'User supervisor approval; open write-off ticket; scan+photo; WeCGA generates E-memo detail; attach approved memo', route: '#/writeoff' },
+      { id: 'WS2', page: 7, text: 'User supervisor approval; open write-off service request; scan+photo; WeCGA generates E-memo detail; attach approved memo', route: '#/writeoff' },
       { id: 'WS3', page: 7, text: 'Asset Team verify: cause, COST, NBV, current storage location', route: '#/writeoff' },
       { id: 'WS4', page: 7, text: 'Sub-committee then Committee approval', route: '#/writeoff' },
       { id: 'WS5', page: 7, text: 'Vendor pays, receipt attached, vendor collects asset', route: '#/writeoff' },
       { id: 'WS6', page: 7, text: 'Remove from SAP; remove from WeCGA if no SAP code; PDF report with run number; GA Verify; SAP update; Excel export; E-memo to stakeholders', route: '#/writeoff' },
     ]},
     { group: 'Write-off: donation (p.8)', items: [
-      { id: 'WD1', page: 8, text: 'Unused asset; user opens donation ticket (follow scan+photo steps)', route: '#/writeoff' },
+      { id: 'WD1', page: 8, text: 'Unused asset; user opens donation service request (follow scan+photo steps)', route: '#/writeoff' },
       { id: 'WD2', page: 8, text: 'Asset Team check COST/NBV/storage; Sub-committee then Committee', route: '#/writeoff' },
       { id: 'WD3', page: 8, text: 'Recipient receives, issues certificate of appreciation; remove from SAP & WeCGA', route: '#/writeoff' },
     ]},
     { group: 'Write-off: lost (p.9)', items: [
-      { id: 'WL1', page: 9, text: 'Ticket + memo + line approval; Asset Team check cause/COST/NBV/compensate', route: '#/writeoff' },
+      { id: 'WL1', page: 9, text: 'Service request + memo + line approval; Asset Team check cause/COST/NBV/compensate', route: '#/writeoff' },
       { id: 'WL2', page: 9, text: 'Sub-committee then Committee; compensate; receipts; remove from SAP & WeCGA', route: '#/writeoff' },
     ]},
     { group: 'Count roles & rights (p.10)', items: [
@@ -102,7 +103,7 @@
       { id: 'C4', page: 10, text: 'IT = MASS scan without photo', route: '#/my-count' },
       { id: 'C5', page: 10, text: 'Engineering = MASS scan without photo, only technician equipment', route: '#/my-count' },
       { id: 'C6', page: 10, text: 'All employees = must scan AND photo', route: '#/my-count' },
-      { id: 'C7', page: 10, text: 'Count on behalf of others: counter recorded, Owner unchanged; wrong holder -> change-holder request ticket', route: '#/my-count' },
+      { id: 'C7', page: 10, text: 'Count on behalf of others: counter recorded, Owner unchanged; wrong holder -> change-holder service request', route: '#/my-count' },
     ]},
     { group: 'Count types & process (p.10)', items: [
       { id: 'CT1', page: 10, text: 'Annual count done simultaneously nationwide', route: '#/counts' },
@@ -115,10 +116,12 @@
       { id: 'CO3', page: 10, text: '3.4 Outcome: found - not in SAP -> Registration', route: '#/my-count' },
       { id: 'CO4', page: 10, text: '3.4 Outcome: found - damaged -> Write-off (damage)', route: '#/my-count' },
       { id: 'CO5', page: 10, text: '3.4 Outcome: not found - lost -> compensation + Write-off lost', route: '#/my-count' },
-      { id: 'CO6', page: 10, text: '3.4 Outcome: moved elsewhere -> require note; return to Store/Engineering/Vendor/IT with evidence, else lost; IT names other holder -> change-holder ticket', route: '#/my-count' },
+      { id: 'CO6', page: 10, text: '3.4 Outcome: moved elsewhere -> require note; return to Store/Engineering/Vendor/IT with evidence, else lost; IT names other holder -> change-holder service request', route: '#/my-count' },
+      { id: 'CO7', page: 10, text: '3.4 Moved with evidence: open Return service request to Store / Engineering / Vendor / IT to confirm return evidence', route: '#/my-count' },
     ]},
     { group: 'SAP data & reporting (p.11)', items: [
       { id: 'D1', page: 11, text: 'All 33 SAP fields present (Company, Asset Class, Municipality/ECC6.0 No., Asset, Cap.Date, Cost, Accum, NBV, Location, Eva4, Ev.Grp5, Vendor, Useful Life, Warranty ...)', route: '#/assets' },
+      { id: 'D4', page: 1, text: 'Install location = SAP Location OR employee org location for movable equipment', route: '#/assets' },
       { id: 'D2', page: 11, text: 'Report shows Found / Not found status and count date', route: '#/reports' },
       { id: 'D3', page: 11, text: 'Log activity shown as a timeline', route: '#/audit' },
     ]},

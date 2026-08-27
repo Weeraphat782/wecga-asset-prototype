@@ -3,6 +3,7 @@
      SALE     - damaged / not needed => sale   (App.FLOWS.writeoffSale, p.7)
      DONATION - donate unused asset            (App.FLOWS.writeoffDonation, p.8)
      LOST     - loss + compensation            (App.FLOWS.writeoffLost, p.6, p.9)
+     DISPOSE  - destroy / scrap (no sale)      (App.FLOWS.writeoffDispose, M7)
    Coverage IDs: M7, W5, L1, L2, L3, L4, L5, WS1..WS6, WD1..WD3, WL1, WL2.
    Reuses App.assetCode / assetTitle / ownerLabel / exportRows from views/assets.js. */
 (function () {
@@ -13,14 +14,32 @@
     Sale:     { flow: 'writeoffSale',     type: 'Write-off Sale',     icon: 'sell',                page: 'p.7', ids: 'WS1-WS6', tone: 'info' },
     Donation: { flow: 'writeoffDonation', type: 'Write-off Donation', icon: 'volunteer_activism',  page: 'p.8', ids: 'WD1-WD3', tone: 'ok'   },
     Lost:     { flow: 'writeoffLost',     type: 'Write-off Lost',      icon: 'search_off',          page: 'p.6 / p.9', ids: 'L1-L5, WL1-WL2', tone: 'danger' },
+    Dispose:  { flow: 'writeoffDispose',  type: 'Write-off Dispose',  icon: 'delete_forever',      page: 'M7', ids: 'M7', tone: 'neutral' },
   };
+  const DISPOSE_METHODS = ['Physical destruction', 'Licensed scrap vendor', 'E-waste recycler'];
   const trackOf = (t) => (t.type || '').replace('Write-off ', '') || 'Sale';
+
+  function ememoRecipients(a) {
+    if (!a) return [];
+    const ownerEmail = a.owner && a.owner.type === 'org' ? (a.orgHeadEmail || a.owner.email) : (a.owner && a.owner.email);
+    const rows = [];
+    if (ownerEmail) rows.push({ role: 'Asset owner / Head-of', email: ownerEmail });
+    const hq = App.store.users.find(u => u.role === 'asset_hq');
+    if (hq) rows.push({ role: 'Asset Team HQ', email: hq.email });
+    const acc = App.store.users.find(u => u.role === 'accounting');
+    if (acc) rows.push({ role: 'Accounting', email: acc.email });
+    const area = (a.area || '').toLowerCase();
+    const ga = App.store.users.find(u => u.role === 'ga' && u.area && area && u.area.toLowerCase() === area);
+    if (ga) rows.push({ role: 'GA (' + a.area + ')', email: ga.email });
+    return rows;
+  }
 
   // Track-specific documents named in the requirements (attachment affordance targets).
   function requiredDocs(t) {
     const track = trackOf(t);
     if (track === 'Sale') return ['Approved E-memo', 'Payment receipt (vendor)'];
     if (track === 'Donation') return ['Certificate of appreciation'];
+    if (track === 'Dispose') return ['Approved E-memo', 'Destruction certificate / vendor receipt', 'Before-disposal photos'];
     // Lost - depends on the loss sub-case (p.6)
     if (t.lossType === 'theft') return ['Police daily record (copy)', 'POA + authorized signatory card', 'Compensation receipt'];
     return ['Supervisor / transferee memo', 'Disaster report (fire/flood/earthquake)', 'Compensation receipt'];
@@ -34,7 +53,12 @@
       return s;
     }
     if (track === 'Sale') return (t.verify && t.verify.cause) ? t.verify.cause : (t.insuranceClaim ? 'Damaged (insurance claim)' : 'Damaged / not needed');
-    return t.recipient ? 'Donate \u2192 ' + t.recipient : 'Donation';
+    if (track === 'Donation') return t.recipient ? 'Donate \u2192 ' + t.recipient : 'Donation';
+    if (track === 'Dispose') {
+      const r = (t.verify && t.verify.cause) || t.disposeReason || 'Destroy / scrap';
+      return t.disposeMethod ? r + ' \u2014 ' + t.disposeMethod : r;
+    }
+    return 'Lost';
   }
 
   const companyWriteoffs = () => App.store.tickets.filter(t =>
@@ -52,27 +76,394 @@
   };
 
   /* ====================================================================
-     MAIN SCREEN  #/writeoff
+     WIZARD + LIST  #/writeoff  +  #/writeoff/new
      ==================================================================== */
-  let state = { filter: 'All' };
+  const WO_STEPS = [
+    { title: 'Select assets', desc: 'Pick assets to write off' },
+    { title: 'Track & details', desc: 'Sale / Donation / Lost / Dispose track fields (p.6-9, M7)' },
+    { title: 'Review & create', desc: 'Confirm and open write-off service request(s)' },
+  ];
+
+  const wiz = { step: 0, loc: null, assetIds: [], track: 'Sale', cause: '', insuranceClaim: false, recipient: '', lossType: 'unknown', unknownReason: '', disposeReason: '', disposeMethod: '', q: '' };
+  App._writeoffWizard = wiz; // ponytail: harness self-check
+
+  let _writeoffScanActive = false;
+  App._writeoffScanActive = () => _writeoffScanActive; // ponytail: harness self-check
+
+  let listFilter = 'all';
+  let trackFilter = 'All';
+
+  function resetWizard() {
+    wiz.step = 0; wiz.loc = App.emptyLoc(); wiz.assetIds = []; wiz.q = '';
+    wiz.track = 'Sale'; wiz.cause = ''; wiz.insuranceClaim = false;
+    wiz.recipient = ''; wiz.lossType = 'unknown'; wiz.unknownReason = '';
+    wiz.disposeReason = ''; wiz.disposeMethod = '';
+    _writeoffScanActive = false;
+  }
+
+  function writeoffScanSessionBar() {
+    if (!_writeoffScanActive) return '';
+    const n = wiz.assetIds.length;
+    return `<div class="count-scan-session card" id="writeoffScanSession">
+      <div class="count-scan-session-head">
+        <span class="material-symbols-outlined">qr_code_scanner</span>
+        <strong>Scan session</strong>
+        <span class="count-scan-counter">${n} selected</span>
+        <button type="button" class="btn text sm" data-act="wo-end-scan">End session</button>
+      </div>
+      <div class="scan-box">
+        <span class="material-symbols-outlined scan-box-icon">qr_code_scanner</span>
+        <p class="scan-box-lead">Scan asset QR codes to add them to this write-off request. First scan sets location; keep scanning to add more.</p>
+        <div class="scan-actions">
+          <button type="button" class="btn" data-act="wo-scan-camera">${icon('photo_camera')} Scan with camera</button>
+          <div class="scan-demo-group">
+            <span class="scan-demo-label">For demo</span>
+            <button type="button" class="btn outline sm" data-act="wo-scan-simulate">Simulate scan</button>
+            <button type="button" class="btn outline sm" data-act="wo-scan-simulate-already">Simulate scan (already selected)</button>
+          </div>
+        </div>
+        <div class="scan-manual-entry">
+          <p class="muted" style="font-size:12px;margin:0 0 6px">Or enter asset code:</p>
+          <input class="input" id="writeoffScanInput" placeholder="e.g. A-009 or asset code" autocomplete="off" />
+          <button type="button" class="btn outline sm" data-act="wo-scan-lookup">Look up code</button>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  function addScannedAsset(a) {
+    if (!a) return false;
+    if (!App.locComplete(wiz.loc)) {
+      wiz.loc = { company: a.companyCode, project: a.project, building: a.building, floor: a.floor, unit: a.unit };
+    } else if (!App.locMatch(a, wiz.loc)) {
+      ui.toast('Asset is not at the selected unit — ' + App.locLabel(a), 'warn');
+      return false;
+    }
+    if (wiz.assetIds.includes(a.id)) {
+      ui.toast(App.assetCode(a) + ' already selected', 'info');
+      return false;
+    }
+    wiz.assetIds.push(a.id);
+    ui.toast('Added ' + App.assetCode(a) + ' (' + wiz.assetIds.length + ' selected)', 'check_circle');
+    return true;
+  }
+
+  function handleWriteoffScanCode(code) {
+    const a = App.findCompanyAssetByScanCode(code);
+    if (!a) {
+      ui.toast('No asset found for: ' + String(code || '').trim(), 'error');
+      return;
+    }
+    if (addScannedAsset(a)) App.refresh();
+  }
+
+  function simulateWriteoffScan() {
+    const pool = companyAssets().filter(a => !wiz.assetIds.includes(a.id));
+    let candidates = pool;
+    if (App.locComplete(wiz.loc)) candidates = pool.filter(a => App.locMatch(a, wiz.loc));
+    const a = candidates[0];
+    if (!a) {
+      ui.toast('No more assets to simulate at this location', 'info');
+      return;
+    }
+    addScannedAsset(a);
+    App.refresh();
+  }
+
+  function simulateWriteoffScanAlready() {
+    const id = wiz.assetIds[0];
+    if (!id) {
+      ui.toast('Select an asset first — use Simulate scan', 'info');
+      return;
+    }
+    handleWriteoffScanCode(id);
+  }
+
+  function mountWriteoffScan(root) {
+    if (!_writeoffScanActive || wiz.step !== 0) return;
+    root.querySelector('[data-act="wo-end-scan"]')?.addEventListener('click', () => {
+      _writeoffScanActive = false;
+      App.refresh();
+    });
+    root.querySelector('[data-act="wo-scan-camera"]')?.addEventListener('click', () => {
+      ui.toast('Camera needs HTTPS in production — use For demo or Look up code', 'photo_camera');
+    });
+    root.querySelector('[data-act="wo-scan-lookup"]')?.addEventListener('click', () => {
+      const inp = root.querySelector('#writeoffScanInput');
+      if (inp) handleWriteoffScanCode(inp.value);
+    });
+    root.querySelector('#writeoffScanInput')?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') handleWriteoffScanCode(e.target.value);
+    });
+    root.querySelector('[data-act="wo-scan-simulate"]')?.addEventListener('click', simulateWriteoffScan);
+    root.querySelector('[data-act="wo-scan-simulate-already"]')?.addEventListener('click', simulateWriteoffScanAlready);
+    if (_writeoffScanActive && !root.querySelector('#writeoffScanSession')) _writeoffScanActive = false;
+  }
+
+  function companyAssets() {
+    return App.store.assets.filter(a => a.companyCode === App.session.company);
+  }
+
+  function writeoffIsMine(t) {
+    const a = App.asset(t.assetId);
+    if (!a || !a.owner) return false;
+    const u = App.currentUser();
+    if (!u) return false;
+    return a.owner.email === u.email || a.owner.name === u.name;
+  }
+
+  function mineTickets() {
+    return companyWriteoffs().filter(writeoffIsMine);
+  }
+
+  function filteredAssets() {
+    if (!App.locComplete(wiz.loc)) return [];
+    return companyAssets().filter(a => App.locMatch(a, wiz.loc));
+  }
+
+  function captureWriteoff(root) {
+    if (!root) return;
+    if (!wiz.loc) wiz.loc = App.emptyLoc();
+    App.captureLocFields(root, wiz.loc);
+    const causeInp = root.querySelector('[name="cause"]');
+    if (causeInp) wiz.cause = causeInp.value;
+    const claimSel = root.querySelector('[name="insuranceClaim"]');
+    if (claimSel) wiz.insuranceClaim = claimSel.value === 'Yes';
+    const recipInp = root.querySelector('[name="recipient"]');
+    if (recipInp) wiz.recipient = recipInp.value;
+    const lossSel = root.querySelector('[name="lossType"]');
+    if (lossSel) wiz.lossType = lossSel.value;
+    const unkSel = root.querySelector('[name="unknownReason"]');
+    if (unkSel) wiz.unknownReason = unkSel.value;
+    const dispReason = root.querySelector('[name="disposeReason"]');
+    if (dispReason) wiz.disposeReason = dispReason.value;
+    const dispMethod = root.querySelector('[name="disposeMethod"]');
+    if (dispMethod) wiz.disposeMethod = dispMethod.value;
+  }
+
+  function stepError() {
+    if (wiz.step === 0 && !App.locComplete(wiz.loc)) return 'Select Company through Unit';
+    if (wiz.step === 0 && !wiz.assetIds.length) return 'Select at least one asset';
+    return null;
+  }
+
+  function wizardAssets() {
+    return wiz.assetIds.map(id => App.asset(id)).filter(Boolean);
+  }
+
+  function trackFieldsBody() {
+    const track = wiz.track;
+    const seg = `<div class="pill-row" style="margin-bottom:14px;align-items:center">
+      <span class="muted">Track:</span>
+      <div class="segmented" data-seg="track">${Object.keys(TRACKS).map(tr =>
+        `<button type="button" data-val="${tr}" class="${wiz.track === tr ? 'active' : ''}">${icon(TRACKS[tr].icon)} ${tr}</button>`
+      ).join('')}</div>
+    </div>`;
+    let fields = '';
+    if (track === 'Sale') {
+      fields = ui.field({ label: 'Cause (damaged / not needed)', name: 'cause', type: 'text', value: wiz.cause, attrs: 'placeholder="e.g. hardware failure, beyond repair"' })
+        + ui.field({ label: 'Insurance claim?', name: 'insuranceClaim', type: 'select', options: ['No', 'Yes'], value: wiz.insuranceClaim ? 'Yes' : 'No', hint: 'A claimed asset may keep being used or be sold (p.7 WS1)' });
+    } else if (track === 'Donation') {
+      fields = ui.field({ label: 'Recipient', name: 'recipient', type: 'text', value: wiz.recipient, attrs: 'placeholder="e.g. local school / foundation"', hint: 'Recipient issues certificate of appreciation (p.8 WD3)' });
+    } else if (track === 'Dispose') {
+      fields = ui.field({ label: 'Reason for disposal', name: 'disposeReason', type: 'text', value: wiz.disposeReason, attrs: 'placeholder="e.g. obsolete, no salvage value, hazardous"', hint: 'Why the asset must be destroyed rather than sold or donated' })
+        + ui.field({ label: 'Disposal method', name: 'disposeMethod', type: 'select', options: ['', ...DISPOSE_METHODS], value: wiz.disposeMethod, hint: 'Physical destruction or licensed vendor (M7)' });
+    } else {
+      fields = ui.field({ label: 'Loss type', name: 'lossType', type: 'select', options: [{ value: 'theft', label: 'Theft' }, { value: 'unknown', label: 'Unknown cause' }], value: wiz.lossType, hint: 'Theft needs police daily record (p.6 L3)' });
+      if (wiz.lossType === 'unknown') {
+        fields += ui.field({ label: 'Unknown sub-reason', name: 'unknownReason', type: 'select', options: ['resignation', 'disaster - fire', 'disaster - flood', 'disaster - earthquake'], value: wiz.unknownReason, hint: 'Resignation or disaster (p.6 L4)' });
+      }
+    }
+    return seg + fields;
+  }
+
+  function wizardStepBody() {
+    if (wiz.step === 0) {
+      if (!wiz.loc) wiz.loc = App.emptyLoc();
+      let body = writeoffScanSessionBar();
+      body += ui.locFields(wiz.loc);
+      if (App.locComplete(wiz.loc)) {
+        const rows = filteredAssets();
+        body += ui.assetPicker({
+          rows, state: wiz,
+          columns: [
+            { key: 'code', label: 'Asset code', render: r => `<span class="mono">${App.esc(App.assetCode(r))}</span>` },
+            { key: 'desc1', label: 'Description', cls: 'wrap', render: r => App.esc([r.desc1, r.desc2].filter(Boolean).join(' ')) },
+            { key: 'owner', label: 'Owner', render: r => App.ownerLabel(r) },
+            { key: 'loc', label: 'Location', render: r => App.locCell(r) },
+          ],
+          empty: 'No assets at this unit',
+        });
+      } else {
+        body += ui.callout('info', 'Select Project, Building, Floor and Unit to list assets.');
+      }
+      return body;
+    }
+
+    if (wiz.step === 1) return trackFieldsBody();
+
+    const assets = wizardAssets();
+    const causeSummary = wiz.track === 'Sale' ? (wiz.cause || (wiz.insuranceClaim ? 'Insurance claim' : 'Damaged / not needed'))
+      : wiz.track === 'Donation' ? (wiz.recipient ? 'Donate \u2192 ' + wiz.recipient : 'Donation')
+      : wiz.track === 'Dispose' ? ((wiz.disposeReason || 'Destroy / scrap') + (wiz.disposeMethod ? ' \u2014 ' + wiz.disposeMethod : ''))
+      : (wiz.lossType === 'theft' ? 'Theft' : 'Unknown cause' + (wiz.unknownReason ? ' - ' + wiz.unknownReason : ''));
+    return ui.table({
+      columns: [
+        { key: 'code', label: 'Asset code', render: r => `<span class="mono">${App.esc(App.assetCode(r))}</span>` },
+        { key: 'desc', label: 'Description', cls: 'wrap', render: r => App.esc([r.desc1, r.desc2].filter(Boolean).join(' ')) },
+        { key: 'owner', label: 'Owner', render: r => App.ownerLabel(r) },
+      ],
+      rows: assets,
+      empty: 'No assets',
+    })
+      + `<dl class="kv" style="grid-template-columns:auto 1fr;margin-top:14px">
+        <dt>Track</dt><dd>${ui.chip(wiz.track, TRACKS[wiz.track].tone)}</dd>
+        <dt>Cause / details</dt><dd>${App.esc(causeSummary)}</dd>
+        <dt>Service requests to create</dt><dd>${wiz.assetIds.length} (one per asset)</dd>
+      </dl>`
+      + ui.callout('info', 'Creates <b>one write-off service request per asset</b> on the selected track flow.');
+  }
+
+  function wizardNav() {
+    const last = WO_STEPS.length - 1;
+    const isLast = wiz.step === last;
+    const n = wiz.assetIds.length;
+    let btns = `<button type="button" class="btn text" id="wizCancel">${icon('close')} Cancel</button>`;
+    if (wiz.step > 0) btns += ` <button type="button" class="btn tonal" id="wizBack">${icon('arrow_back')} Back</button>`;
+    if (!isLast) btns += ` <button type="button" class="btn" id="wizNext">${icon('arrow_forward')} Next</button>`;
+    else btns += ` <button type="button" class="btn" id="wizCreate">${icon('add')} Create write-off${n ? ' (' + n + ' service request' + (n === 1 ? '' : 's') + ')' : ''}</button>`;
+    return `<div class="pill-row" style="margin-top:22px;justify-content:flex-end">${btns}</div>`;
+  }
+
+  function createWriteoffTickets() {
+    if (!wiz.assetIds.length) { ui.toast('No assets selected', 'error'); return; }
+    const cfg = TRACKS[wiz.track];
+    const created = [];
+    // ponytail: 1 ticket per asset — detail view binds to t.assetId; multi-asset would need detail rewrite
+    wiz.assetIds.forEach(assetId => {
+      const t = { type: cfg.type, flow: cfg.flow, assetId, title: wiz.track + ' write-off - ' + assetId };
+      if (wiz.track === 'Sale') {
+        t.insuranceClaim = wiz.insuranceClaim;
+        if (wiz.cause) {
+          const a = App.asset(assetId) || {};
+          t.verify = { cause: wiz.cause, cost: a.cost, nbv: a.nbv, storage: '' };
+        }
+      } else if (wiz.track === 'Donation') {
+        t.recipient = wiz.recipient;
+      } else if (wiz.track === 'Dispose') {
+        t.disposeReason = wiz.disposeReason;
+        t.disposeMethod = wiz.disposeMethod;
+        if (wiz.disposeReason) {
+          const a = App.asset(assetId) || {};
+          t.verify = { cause: wiz.disposeReason, cost: a.cost, nbv: a.nbv, storage: '' };
+        }
+      } else {
+        t.lossType = wiz.lossType;
+        if (t.lossType === 'unknown') t.unknownReason = wiz.unknownReason;
+      }
+      created.push(App.addTicket(t));
+    });
+    resetWizard();
+    ui.toast('Created ' + created.length + ' service request(s)', 'check_circle');
+    App.navigate(created.length === 1 ? '#/writeoff/' + created[0].id : '#/writeoff');
+  }
+
+  function mountWizard(root, ctx) {
+    if (ctx && ctx.query && ctx.query.scan === '1') _writeoffScanActive = true;
+    mountWriteoffScan(root);
+    root.querySelectorAll('[data-seg="track"] button').forEach(b => b.onclick = () => {
+      captureWriteoff(root); wiz.track = b.getAttribute('data-val'); App.refresh();
+    });
+    let prevLoc = wiz.loc ? JSON.stringify(wiz.loc) : '';
+    App.mountLocFields(root, wiz.loc || App.emptyLoc(), () => {
+      captureWriteoff(root);
+      const next = JSON.stringify(wiz.loc);
+      if (next !== prevLoc) { wiz.assetIds = []; prevLoc = next; }
+      App.refresh();
+    });
+    const lossSel = root.querySelector('[name="lossType"]');
+    if (lossSel) lossSel.onchange = () => { captureWriteoff(root); App.refresh(); };
+
+    if (wiz.step === 0 && App.locComplete(wiz.loc)) App.mountAssetPicker(root, { state: wiz, rows: filteredAssets() });
+
+    const cancel = root.querySelector('#wizCancel');
+    if (cancel) cancel.onclick = () => { resetWizard(); App.navigate('#/writeoff'); };
+    const back = root.querySelector('#wizBack');
+    if (back) back.onclick = () => { captureWriteoff(root); wiz.step--; App.refresh(); };
+    const next = root.querySelector('#wizNext');
+    if (next) next.onclick = () => {
+      captureWriteoff(root);
+      const err = stepError();
+      if (err) { ui.toast(err, 'error'); return; }
+      wiz.step++;
+      App.refresh();
+    };
+    const create = root.querySelector('#wizCreate');
+    if (create) create.onclick = () => {
+      captureWriteoff(root);
+      const err = stepError();
+      if (err) { ui.toast(err, 'error'); return; }
+      createWriteoffTickets();
+    };
+  }
+
+  App.startWriteoff = (assetId, opts) => {
+    resetWizard();
+    const o = opts || {};
+    if (o.track && TRACKS[o.track]) wiz.track = o.track;
+    const a = assetId ? App.asset(assetId) : null;
+    if (a) {
+      wiz.loc = { company: a.companyCode, project: a.project, building: a.building, floor: a.floor, unit: a.unit };
+      wiz.assetIds = [a.id];
+    }
+    App.navigate('#/writeoff/new');
+  };
+  App._writeoffCreate = createWriteoffTickets; // ponytail: harness self-check
+
+  function trackSeg(all, filtered) {
+    const opts = [{ v: 'All', l: 'All (' + filtered.length + ')' }]
+      .concat(Object.keys(TRACKS).map(tr => ({
+        v: tr,
+        l: tr + ' (' + all.filter(t => trackOf(t) === tr).length + ')',
+      })));
+    return `<div class="segmented" data-tfilter>${opts.map(o =>
+      `<button type="button" data-val="${App.esc(o.v)}" class="${trackFilter === o.v ? 'active' : ''}">${App.esc(o.l)}</button>`
+    ).join('')}</div>`;
+  }
 
   App.registerView('#/writeoff', {
     title: 'Disposal / Write-off',
     render() {
       const all = companyWriteoffs();
+      const mine = mineTickets();
+      const base = listFilter === 'mine' ? mine : all;
+      const rows = base.filter(t => trackFilter === 'All' || trackOf(t) === trackFilter);
       const openCount = (track) => all.filter(t => trackOf(t) === track && t.status !== 'Completed').length;
 
-      const kpis = `<div class="grid cols-4">
-        ${ui.kpi({ label: 'Open write-offs', value: all.filter(t => t.status !== 'Completed').length, icon: 'delete_sweep' })}
-        ${ui.kpi({ label: 'Sale (p.7)', value: openCount('Sale'), icon: TRACKS.Sale.icon, tone: 'info' })}
-        ${ui.kpi({ label: 'Donation (p.8)', value: openCount('Donation'), icon: TRACKS.Donation.icon, tone: 'ok' })}
-        ${ui.kpi({ label: 'Lost (p.6 / p.9)', value: openCount('Lost'), icon: TRACKS.Lost.icon, tone: 'danger' })}
+      const stats = ui.statStrip([
+        { label: 'Open write-offs', value: all.filter(t => t.status !== 'Completed').length, ic: 'delete_sweep' },
+        { label: 'Sale (p.7)', value: openCount('Sale'), ic: TRACKS.Sale.icon },
+        { label: 'Donation (p.8)', value: openCount('Donation'), ic: TRACKS.Donation.icon },
+        { label: 'Lost (p.6 / p.9)', value: openCount('Lost'), ic: TRACKS.Lost.icon },
+        { label: 'Dispose (M7)', value: openCount('Dispose'), ic: TRACKS.Dispose.icon },
+      ]);
+
+      const listFilterBar = `<div class="pill-row" style="margin-bottom:10px;align-items:center">
+        <span class="muted">Show:</span>
+        <div class="segmented" data-lfilter>
+          <button type="button" data-val="all" class="${listFilter === 'all' ? 'active' : ''}">${icon('list')} All service requests (${all.length})</button>
+          <button type="button" data-val="mine" class="${listFilter === 'mine' ? 'active' : ''}" ${mine.length ? '' : 'disabled'}>${icon('person')} Mine (${mine.length})</button>
+        </div>
       </div>`;
 
-      const rows = all.filter(t => state.filter === 'All' || trackOf(t) === state.filter);
+      const trackFilterBar = `<div class="pill-row" style="margin-bottom:14px;align-items:center;flex-wrap:wrap;gap:8px">
+        <span class="muted">Track:</span>
+        ${trackSeg(all, base)}
+      </div>`;
+
       const table = ui.table({
         columns: [
-          { key: 'id', label: 'Ticket', render: r => `<span class="mono">${App.esc(r.id)}</span>` },
+          { key: 'id', label: 'Service request', render: r => `<span class="mono">${App.esc(r.id)}</span>` },
           { key: 'track', label: 'Track', render: r => ui.chip(trackOf(r), TRACKS[trackOf(r)] ? TRACKS[trackOf(r)].tone : 'neutral') },
           { key: 'asset', label: 'Asset', cls: 'wrap', render: r => { const a = App.asset(r.assetId); return a ? App.esc(App.assetTitle(a)) : App.esc(r.assetId || '-'); } },
           { key: 'cause', label: 'Cause / loss type', cls: 'wrap', render: r => App.esc(causeLabel(r)) },
@@ -81,87 +472,57 @@
         ],
         rows,
         rowLink: r => '#/writeoff/' + r.id,
-        empty: 'No write-off tickets for this company / filter',
+        empty: listFilter === 'mine' ? 'No write-off service requests involving you.' : 'No write-off service requests — click Add new to start.',
       });
 
       return ui.pageHead({
         title: 'Disposal / Write-off',
-        sub: 'Three tracks with the literal PDF steps: <b>Sale</b> (p.7), <b>Donation</b> (p.8), <b>Lost</b> (p.6 / p.9). '
-          + 'Approval workflow via sub-committee then committee. <span class="muted">Modules M7, W5</span>',
-        actions: `<button class="btn" id="newWo">${icon('add')} New write-off</button>`,
+        sub: 'Four tracks: <b>Sale</b> (p.7), <b>Donation</b> (p.8), <b>Lost</b> (p.6 / p.9), <b>Dispose</b> (destroy / scrap, M7). '
+          + 'Initiate and attach evidence in WeCGA; committee approval is outside platform scope (SOW E2). <span class="muted">Modules M7, W5</span>',
+        actions: `<button type="button" class="btn tonal" id="scanAssetsBtn">${icon('qr_code_scanner')} Scan assets</button>`
+          + `<button type="button" class="btn" id="addNewBtn">${icon('add')} Add new</button>`,
       })
+      + ui.callout('info', '<b>SOW E2:</b> Sub-committee and committee approval for disposal is excluded from the platform — this prototype demos initiate, verify, and evidence only.')
       + openQuestionCallouts()
-      + kpis
-      + ui.tabs('woTracks', [
-          { id: 'All', label: 'All' },
-          { id: 'Sale', label: 'Sale' },
-          { id: 'Donation', label: 'Donation' },
-          { id: 'Lost', label: 'Lost' },
-        ], state.filter)
-      + ui.card({ title: `${icon('list_alt')} Write-off tickets`, body: table });
+      + stats
+      + ui.card({ title: `${icon('list_alt')} Write-off service requests`, body: listFilterBar + trackFilterBar + table });
     },
-    mount(root) {
-      root.querySelectorAll('[data-tab]').forEach(b => b.onclick = () => { state.filter = b.getAttribute('data-tab'); App.refresh(); });
-      const nw = root.querySelector('#newWo');
-      if (nw) nw.onclick = () => openNewDialog();
+    mount(root, ctx) {
+      const scan = root.querySelector('#scanAssetsBtn');
+      if (scan) scan.onclick = () => { resetWizard(); _writeoffScanActive = true; App.navigate('#/writeoff/new?scan=1'); };
+      const add = root.querySelector('#addNewBtn');
+      if (add) add.onclick = () => { resetWizard(); App.navigate('#/writeoff/new'); };
+      if (ctx.query && ctx.query.asset) App.startWriteoff(ctx.query.asset);
+      root.querySelectorAll('[data-lfilter] [data-val]').forEach(b => b.onclick = () => {
+        if (b.disabled) return;
+        listFilter = b.getAttribute('data-val');
+        App.refresh();
+      });
+      root.querySelectorAll('[data-tfilter] [data-val]').forEach(b => b.onclick = () => {
+        trackFilter = b.getAttribute('data-val');
+        App.refresh();
+      });
     },
   });
 
-  /* ---------- New write-off dialog ---------- */
-  function openNewDialog(presetAssetId) {
-    const assets = App.store.assets.filter(a => a.companyCode === App.session.company);
-    const assetOpts = assets.map(a => ({ value: a.id, label: App.assetCode(a) + ' - ' + [a.desc1, a.desc2].filter(Boolean).join(' ') }));
-
-    const body = `
-      <div class="form-grid">
-        ${ui.field({ label: 'Track', name: 'track', type: 'select', required: true, options: ['Sale', 'Donation', 'Lost'], hint: 'Sale p.7 / Donation p.8 / Lost p.6-9' })}
-        ${ui.field({ label: 'Asset', name: 'assetId', type: 'select', required: true, value: presetAssetId || '', options: assetOpts })}
-      </div>
-      <div data-tf="Sale">
-        ${ui.field({ label: 'Cause (damaged / not needed)', name: 'cause', type: 'text', attrs: 'placeholder="e.g. hardware failure, beyond repair"' })}
-        ${ui.field({ label: 'Insurance claim?', name: 'insuranceClaim', type: 'select', options: ['No', 'Yes'], hint: 'A claimed asset may keep being used (transfer location while awaiting claim) or be sold (p.7 WS1)' })}
-      </div>
-      <div data-tf="Donation" style="display:none">
-        ${ui.field({ label: 'Recipient', name: 'recipient', type: 'text', attrs: 'placeholder="e.g. local school / foundation"', hint: 'Recipient issues a certificate of appreciation (p.8 WD3)' })}
-      </div>
-      <div data-tf="Lost" style="display:none">
-        ${ui.field({ label: 'Loss type', name: 'lossType', type: 'select', options: [{ value: 'theft', label: 'Theft' }, { value: 'unknown', label: 'Unknown cause' }], hint: 'Theft needs a police daily record; company asset needs POA + signatory card (p.6 L3)' })}
-        <div data-lost="unknown" style="display:none">
-          ${ui.field({ label: 'Unknown sub-reason', name: 'unknownReason', type: 'select', options: ['resignation', 'disaster - fire', 'disaster - flood', 'disaster - earthquake'], hint: 'Resignation (supervisor/transferee memo) or disaster (p.6 L4)' })}
-        </div>
-      </div>`;
-
-    const dlg = ui.dialog({
-      title: 'New write-off ticket', size: 'lg',
-      sub: 'Pick a track and asset. Track-specific fields follow the PDF cases.',
-      body,
-      actions: [
-        { label: 'Cancel', kind: 'text' },
-        { label: 'Create ticket', kind: 'btn', act: (d) => {
-          const val = (n) => { const el = d.root.querySelector(`[name="${n}"]`); return el ? el.value : ''; };
-          const track = val('track');
-          const assetId = val('assetId');
-          if (!assetId) { ui.toast('Pick an asset first', 'warning'); return; }
-          const cfg = TRACKS[track];
-          const t = { type: cfg.type, flow: cfg.flow, assetId, title: track + ' write-off - ' + assetId };
-          if (track === 'Sale') { t.insuranceClaim = val('insuranceClaim') === 'Yes'; if (val('cause')) t.verify = { cause: val('cause'), cost: (App.asset(assetId) || {}).cost, nbv: (App.asset(assetId) || {}).nbv, storage: '' }; }
-          else if (track === 'Donation') { t.recipient = val('recipient'); }
-          else { t.lossType = val('lossType'); if (t.lossType === 'unknown') t.unknownReason = val('unknownReason'); }
-          const created = App.addTicket(t);
-          ui.toast('Created ' + created.id, 'check_circle');
-          App.navigate('#/writeoff/' + created.id);
-        } },
-      ],
-    });
-
-    // track selector toggles the track-specific field blocks
-    const trackSel = dlg.root.querySelector('[name="track"]');
-    const showTrack = (tr) => dlg.root.querySelectorAll('[data-tf]').forEach(el => { el.style.display = el.getAttribute('data-tf') === tr ? '' : 'none'; });
-    if (trackSel) trackSel.onchange = e => showTrack(e.target.value);
-    const lossSel = dlg.root.querySelector('[name="lossType"]');
-    const showLost = (v) => { const el = dlg.root.querySelector('[data-lost="unknown"]'); if (el) el.style.display = v === 'unknown' ? '' : 'none'; };
-    if (lossSel) lossSel.onchange = e => showLost(e.target.value);
-  }
+  App.registerView('#/writeoff/new', {
+    title: 'New write-off',
+    render(ctx) {
+      if (ctx && ctx.query && ctx.query.scan === '1') _writeoffScanActive = true;
+      if (wiz.step >= WO_STEPS.length) wiz.step = WO_STEPS.length - 1;
+      return ui.pageHead({
+        title: 'New write-off',
+        breadcrumb: [{ label: 'Disposal / Write-off', hash: '#/writeoff' }, { label: 'New write-off' }],
+        sub: 'Select assets, pick track, create one service request per asset',
+        actions: ui.stepsBar(WO_STEPS, wiz.step),
+      }) + ui.card({
+        title: icon('edit_note') + ' ' + WO_STEPS[wiz.step].title,
+        sub: `Step ${wiz.step + 1} of ${WO_STEPS.length} &mdash; ${WO_STEPS[wiz.step].desc}`,
+        body: `<form id="wizForm">${wizardStepBody()}${wizardNav()}</form>`,
+      });
+    },
+    mount: mountWizard,
+  });
 
   /* ====================================================================
      DETAIL SCREEN  #/writeoff/:id
@@ -170,7 +531,7 @@
     title: ctx => ctx.params.id,
     render(ctx) {
       const t = App.ticket(ctx.params.id);
-      if (!t || !(t.type || '').startsWith('Write-off')) return ui.pageHead({ title: 'Write-off ticket not found' }) + ui.callout('warn', 'No such write-off ticket.');
+      if (!t || !(t.type || '').startsWith('Write-off')) return ui.pageHead({ title: 'Write-off service request not found' }) + ui.callout('warn', 'No such write-off service request.');
       const track = trackOf(t);
       const cfg = TRACKS[track] || TRACKS.Sale;
       const a = App.asset(t.assetId);
@@ -184,6 +545,7 @@
         if (t.unknownReason) chips += ' ' + ui.chip(t.unknownReason, 'neutral');
       }
       if (track === 'Sale') chips += ' ' + ui.chip(t.insuranceClaim ? 'Insurance claim: Yes' : 'Insurance claim: No', t.insuranceClaim ? 'warn' : 'neutral');
+      if (track === 'Dispose' && t.disposeMethod) chips += ' ' + ui.chip(t.disposeMethod, 'neutral');
       chips += ' ' + ui.statusChip(t.status);
 
       /* --- asset summary card --- */
@@ -209,7 +571,7 @@
       const v = t.verify || {};
       const verifyCard = ui.card({
         title: `${icon('fact_check')} Asset Team Verify`,
-        sub: (track === 'Sale' ? 'p.7 step 7 (WS3)' : track === 'Donation' ? 'p.8 step 3 (WD2)' : 'p.6 / p.9 step 3 (L2, WL1)') + ' - verify cause, COST, NBV, current storage location. Role: <b>Asset Team HQ</b>.',
+        sub: (track === 'Sale' ? 'p.7 step 7 (WS3)' : track === 'Donation' ? 'p.8 step 3 (WD2)' : track === 'Dispose' ? 'Dispose step 3 (M7)' : 'p.6 / p.9 step 3 (L2, WL1)') + ' - verify cause, COST, NBV, current storage location. Role: <b>Asset Team HQ</b>.',
         body: `<div class="form-grid">
             ${ui.field({ label: 'Cause / damage detail', name: 'v_cause', type: 'text', value: v.cause || '', attrs: App.hasRole('asset_hq') ? '' : 'readonly' })}
             ${ui.field({ label: 'COST', name: 'v_cost', type: 'text', value: v.cost != null ? v.cost : (a ? a.cost : ''), attrs: App.hasRole('asset_hq') ? '' : 'readonly' })}
@@ -233,7 +595,8 @@
               ${ui.field({ label: 'Claimed asset - what next?', name: 's_decision', type: 'select', value: t.claimDecision || '', options: ['', 'Continue using - transfer location while awaiting claim', 'Sell'] })}
             </div>
             ${ui.callout('question', 'p.7 open question - <b>WeCGA generates the E-memo detail</b> (flow step 5). Whether WeCGA also routes the request to the line supervisor, or the approved memo comes from outside WeCGA, is still to confirm. Both paths are shown.')}
-            <div class="pill-row" style="margin-top:8px"><button class="btn sm" data-act="genMemo">${icon('draft')} WeCGA generate E-memo detail</button> <button class="btn text sm" data-act="saveClaim">${icon('save')} Save</button></div>`,
+            ${t.ememoSentAt ? ui.callout('ok', 'E-memo sent to stakeholders on <b>' + fmt.datetime(t.ememoSentAt) + '</b> (p.7 step 19).') : ''}
+            <div class="pill-row" style="margin-top:8px"><button class="btn sm" data-act="genMemo">${icon('draft')} WeCGA generate E-memo detail</button> <button class="btn sm tonal" data-act="sendEmemo">${icon('send')} Send E-memo to stakeholders</button> <button class="btn text sm" data-act="saveClaim">${icon('save')} Save</button></div>`,
         });
       } else if (track === 'Donation') {
         trackCard = ui.card({
@@ -242,6 +605,17 @@
           body: `${ui.field({ label: 'Recipient', name: 'd_recipient', type: 'text', value: t.recipient || '', attrs: 'placeholder="e.g. local school / foundation"' })}
             ${ui.callout('info', 'The <b>certificate of appreciation</b> is tracked in Attachments below (p.8 WD3).')}
             <div class="pill-row" style="margin-top:8px"><button class="btn sm" data-act="saveRecipient">${icon('save')} Save recipient</button></div>`,
+        });
+      } else if (track === 'Dispose') {
+        trackCard = ui.card({
+          title: `${icon('delete_forever')} Dispose - destroy / scrap`,
+          sub: 'M7 — physical destruction or licensed vendor; no sale or donation.',
+          body: `<div class="form-grid">
+              ${ui.field({ label: 'Reason for disposal', name: 'x_disposeReason', type: 'text', value: t.disposeReason || (v.cause || ''), attrs: 'placeholder="e.g. obsolete, hazardous"' })}
+              ${ui.field({ label: 'Disposal method', name: 'x_disposeMethod', type: 'select', value: t.disposeMethod || '', options: ['', ...DISPOSE_METHODS] })}
+            </div>
+            ${ui.callout('info', 'Attach <b>destruction certificate</b> or vendor receipt in Attachments below after step 6–7.')}
+            <div class="pill-row" style="margin-top:8px"><button class="btn sm" data-act="saveDispose">${icon('save')} Save dispose details</button></div>`,
         });
       } else {
         trackCard = ui.card({
@@ -355,11 +729,44 @@
         ui.toast('WeCGA generated the E-memo detail', 'draft');
       };
 
+      const sendEmemo = root.querySelector('[data-act="sendEmemo"]');
+      if (sendEmemo) sendEmemo.onclick = () => {
+        const recips = ememoRecipients(a);
+        const rows = recips.length
+          ? recips.map(r => `<li>${App.esc(r.role)} &mdash; <span class="mono">${App.esc(r.email)}</span></li>`).join('')
+          : '<li class="muted">No recipients resolved from asset data.</li>';
+        ui.dialog({
+          title: 'Send E-memo to stakeholders', size: 'md',
+          sub: 'p.7 step 19 - notify owner/Head-of, Asset Team HQ, Accounting, and GA for the asset area.',
+          body: `<ul class="checklist">${rows}</ul>`,
+          actions: [
+            { label: 'Cancel', kind: 'text' },
+            { label: 'Send E-memo', kind: 'btn', act: () => {
+              t.ememoSentAt = new Date().toISOString();
+              App.audit({ action: 'E-memo sent to stakeholders', target: t.id,
+                detail: recips.map(r => r.email).join(', ') || 'no recipients' });
+              ui.toast('E-memo sent to ' + recips.length + ' recipient(s)', 'send');
+              App.refresh();
+            } },
+          ],
+        });
+      };
+
       const rec = root.querySelector('[data-act="saveRecipient"]');
       if (rec) rec.onclick = () => {
         t.recipient = val('d_recipient');
         App.audit({ action: 'Donation recipient saved', target: t.id, detail: t.recipient || '' });
         ui.toast('Recipient saved', 'save');
+        App.refresh();
+      };
+
+      const disp = root.querySelector('[data-act="saveDispose"]');
+      if (disp) disp.onclick = () => {
+        t.disposeReason = val('x_disposeReason');
+        t.disposeMethod = val('x_disposeMethod');
+        if (t.disposeReason) t.verify = Object.assign({}, t.verify, { cause: t.disposeReason });
+        App.audit({ action: 'Dispose details saved', target: t.id, detail: causeLabel(t) });
+        ui.toast('Dispose details saved', 'save');
         App.refresh();
       };
 
@@ -404,7 +811,7 @@
         const a = App.asset(t.assetId) || {};
         const v = t.verify || {};
         App.exportRows('writeoff-' + t.id + '.csv',
-          ['Ticket', 'Track', 'Asset', 'Cause / loss type', 'COST', 'NBV', 'Storage', 'Current step', 'Status', 'Run number', 'Attachments'],
+          ['Service request', 'Track', 'Asset', 'Cause / loss type', 'COST', 'NBV', 'Storage', 'Current step', 'Status', 'Run number', 'Attachments'],
           [[t.id, trackOf(t), App.assetCode(a), causeLabel(t), v.cost != null ? v.cost : a.cost, v.nbv != null ? v.nbv : a.nbv, v.storage || a.room || '', stepLabel(t), t.status, t.runNumber || '', (t.attachments || []).join('; ')]]);
       };
     },

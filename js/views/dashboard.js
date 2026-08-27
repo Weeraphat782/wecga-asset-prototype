@@ -132,6 +132,7 @@
         { label: 'Sale', type: 'Write-off Sale', tone: 'info' },
         { label: 'Donation', type: 'Write-off Donation', tone: 'ok' },
         { label: 'Lost', type: 'Write-off Lost', tone: 'danger' },
+        { label: 'Dispose', type: 'Write-off Dispose', tone: 'neutral' },
       ].map(t => ({ label: t.label, tone: t.tone, value: tickets.filter(x => x.type === t.type).length }));
       const woTickets = tickets.filter(t => (t.type || '').startsWith('Write-off'));
       // funnel by lifecycle stage (bucketed on relative progress through its flow)
@@ -149,7 +150,7 @@
         title: `${icon('delete_sweep')} Write-off pipeline`, sub: 'By disposal track, then by lifecycle stage (funnel)',
         actions: `<button class="btn text sm" data-nav="#/writeoff">${icon('arrow_forward')} Write-off</button>`,
         body: `<div class="muted" style="font-size:12px;margin-bottom:4px">By track</div>${hbars(woTracks)}
-          <hr class="divider"><div class="muted" style="font-size:12px;margin-bottom:8px">By stage (${woTickets.length} tickets)</div>${stacked(funnel)}`,
+          <hr class="divider"><div class="muted" style="font-size:12px;margin-bottom:8px">By stage (${woTickets.length} service requests)</div>${stacked(funnel)}`,
       });
 
       // Recent activity timeline (company-scoped where the target is identifiable)

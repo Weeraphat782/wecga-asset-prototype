@@ -7,6 +7,8 @@
 (function () {
   const App = window.App, ui = App.ui, fmt = App.fmt, esc = App.esc;
 
+  let varFilter = 'All';
+
   const OUTCOME_LABEL = {
     found_ok: 'Found - OK', found_wrong: 'Found - wrong owner/location',
     not_in_sap: 'Found - not in SAP', found_damaged: 'Found - damaged',
@@ -43,20 +45,30 @@
   App.registerView('#/reconcile', {
     title: 'Reconciliation',
     render() {
-      const rows = rowsForCompany();
+      const allRows = rowsForCompany();
+      const ok = allRows.filter(x => x.v.type === 'OK').length;
+      const diffs = allRows.filter(x => x.v.corr === 'transfer').length;
+      const notFound = allRows.filter(x => x.v.corr === 'lost').length;
+      const notInSap = allRows.filter(x => x.v.corr === 'register').length;
+      const damaged = allRows.filter(x => x.v.corr === 'writeoffSale').length;
 
-      const ok = rows.filter(x => x.v.type === 'OK').length;
-      const diffs = rows.filter(x => x.v.corr === 'transfer').length;
-      const notFound = rows.filter(x => x.v.corr === 'lost').length;
-      const notInSap = rows.filter(x => x.v.corr === 'register').length;
-      const damaged = rows.filter(x => x.v.corr === 'writeoffSale').length;
+      const filterMap = {
+        All: () => true,
+        OK: x => x.v.type === 'OK',
+        Transfer: x => x.v.corr === 'transfer',
+        Lost: x => x.v.corr === 'lost',
+        Register: x => x.v.corr === 'register',
+        Damaged: x => x.v.corr === 'writeoffSale',
+      };
+      const rows = allRows.filter(filterMap[varFilter] || filterMap.All);
 
-      const kpis = `<div class="grid cols-5">
-        ${ui.kpi({ label: 'Reconciled', value: rows.length, icon: 'difference' })}
-        ${ui.kpi({ label: 'OK / matched', value: ok, icon: 'check_circle', tone: 'ok' })}
-        ${ui.kpi({ label: 'Owner/Location diff', value: diffs, icon: 'swap_horiz', tone: diffs ? 'warn' : undefined })}
-        ${ui.kpi({ label: 'In SAP, not found', value: notFound, icon: 'error', tone: notFound ? 'danger' : undefined })}
-        ${ui.kpi({ label: 'Found, not in SAP', value: notInSap, icon: 'note_add', tone: notInSap ? 'warn' : undefined })}
+      const varSeg = `<div class="segmented" data-vfilter>
+        <button type="button" data-val="All" class="${varFilter === 'All' ? 'active' : ''}">All (${allRows.length})</button>
+        <button type="button" data-val="OK" class="${varFilter === 'OK' ? 'active' : ''}">OK (${ok})</button>
+        <button type="button" data-val="Transfer" class="${varFilter === 'Transfer' ? 'active' : ''}">Transfer (${diffs})</button>
+        <button type="button" data-val="Lost" class="${varFilter === 'Lost' ? 'active' : ''}">Lost (${notFound})</button>
+        <button type="button" data-val="Register" class="${varFilter === 'Register' ? 'active' : ''}">Register (${notInSap})</button>
+        <button type="button" data-val="Damaged" class="${varFilter === 'Damaged' ? 'active' : ''}">Damaged (${damaged})</button>
       </div>`;
 
       const table = ui.table({
@@ -67,7 +79,7 @@
           { key: 'var', label: 'Variance', render: x => ui.chip(x.v.type, x.v.kind) },
           { key: 'corr', label: 'Proposed correction', render: x => {
             if (!x.v.corr) return '<span class="muted">None</span>';
-            if (x.r.spawnedTicket) return ui.chip('Ticket ' + x.r.spawnedTicket + ' created', 'info');
+            if (x.r.spawnedTicket) return ui.chip('Service request ' + x.r.spawnedTicket + ' created', 'info');
             return `<button class="btn sm" data-act="corr" data-asset="${x.a.id}" data-corr="${x.v.corr}">${App.icon('build')} ${CORR[x.v.corr].label}</button>`;
           } },
         ],
@@ -77,14 +89,24 @@
 
       return ui.pageHead({
         title: 'Reconciliation',
-        sub: 'WeCGA actual count findings vs SAP master - one click generates the correcting ticket. <span class="muted">Module M6</span>',
+        sub: 'WeCGA actual count findings vs SAP master - one click generates the correcting service request. <span class="muted">Module M6</span>',
         actions: `<button class="btn outline sm" id="expRec">${App.icon('table_view')} Export Excel</button>`,
       })
       + ui.callout('info', 'Each counted asset is compared to its SAP record. <b>Owner/Location differs</b> &rarr; Transfer. <b>In SAP but Not found</b> &rarr; Write-off Lost. <b>Found but Not in SAP</b> &rarr; Registration. <b>Damaged</b> &rarr; Write-off Sale.')
-      + kpis
-      + ui.card({ title: `${App.icon('difference')} Variance register`, body: table });
+      + ui.statStrip([
+        { label: 'Reconciled', value: allRows.length, ic: 'difference' },
+        { label: 'OK / matched', value: ok, ic: 'check_circle' },
+        { label: 'Owner/Location diff', value: diffs, ic: 'swap_horiz' },
+        { label: 'In SAP, not found', value: notFound, ic: 'error' },
+        { label: 'Found, not in SAP', value: notInSap, ic: 'note_add' },
+      ])
+      + ui.card({ title: `${App.icon('difference')} Variance register`, body: `<div class="pill-row" style="margin-bottom:14px;align-items:center"><span class="muted">Variance:</span>${varSeg}</div>` + table });
     },
     mount(root) {
+      root.querySelectorAll('[data-vfilter] [data-val]').forEach(b => b.onclick = () => {
+        varFilter = b.getAttribute('data-val');
+        App.refresh();
+      });
       root.querySelectorAll('[data-act="corr"]').forEach(b => b.onclick = () => {
         const a = App.asset(b.getAttribute('data-asset'));
         const corr = CORR[b.getAttribute('data-corr')];
@@ -103,7 +125,7 @@
 
       const exp = root.querySelector('#expRec');
       if (exp) exp.onclick = () => {
-        const headers = ['Asset', 'Description', 'SAP owner', 'SAP location', 'Actual finding', 'Variance', 'Proposed correction', 'Ticket'];
+        const headers = ['Asset', 'Description', 'SAP owner', 'SAP location', 'Actual finding', 'Variance', 'Proposed correction', 'Service request'];
         const rows = rowsForCompany().map(x => [
           App.assetCode(x.a),
           [x.a.desc1, x.a.desc2].filter(Boolean).join(' '),

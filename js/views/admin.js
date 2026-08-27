@@ -108,11 +108,7 @@
   }
 
   function usersBody() {
-    const areaName = (u) => {
-      if (!u.area) return '-';
-      const a = App.store.areas.find(x => x.code === u.area || x.name === u.area);
-      return a ? `${a.code} - ${a.name}` : u.area;
-    };
+    const areaName = (u) => u.area || '-';
     const rows = App.store.users;
     return ui.card({
       title: `${icon('group')} Users (${rows.length})`,
@@ -123,7 +119,7 @@
           { key: 'name', label: 'Name', render: r => `<b>${App.esc(r.name)}</b>` },
           { key: 'role', label: 'Role', render: r => App.esc(App.ROLES[r.role] || r.role) },
           { key: 'org', label: 'Organization' },
-          { key: '_area', label: 'GA area', render: areaName },
+          { key: '_area', label: 'GA project', render: areaName },
           { key: 'email', label: 'Email', render: r => `<span class="mono">${App.esc(r.email)}</span>` },
           { key: 'company', label: 'Company', render: r => ui.chip(App.COMPANIES[r.company] || r.company, 'outline') },
         ],
@@ -156,12 +152,20 @@
       }),
     });
 
-    const areasByCompany = ['AIS', 'BB'].map(c => {
-      const rows = App.store.areas.filter(a => a.company === c);
+    const sitesByCompany = ['AIS', 'BB'].map(c => {
+      const rows = (App.store.sites || []).filter(s => s.company === c);
       return ui.card({
-        title: `${icon('map')} GA areas - ${App.COMPANIES[c]} (${rows.length})`,
-        sub: c === 'AIS' ? 'AIS operates 6 GA areas.' : 'BB operates 10 GA areas.',
-        body: ui.table({ columns: [{ key: 'code', label: 'Area code' }, { key: 'name', label: 'Area name' }], rows }),
+        title: `${icon('map')} Site units - ${App.COMPANIES[c]} (${rows.length})`,
+        sub: 'Company → Project → Building → Floor → Unit',
+        body: ui.table({
+          columns: [
+            { key: 'project', label: 'Project' },
+            { key: 'building', label: 'Building' },
+            { key: 'floor', label: 'Floor' },
+            { key: 'unit', label: 'Unit' },
+          ],
+          rows,
+        }),
       });
     }).join('');
 
@@ -190,7 +194,7 @@
     });
 
     return ui.callout('info', 'Master data below drives the dropdowns across the app. In production these are editable; here they are seeded and derived from the asset register. <span class="muted">M10</span>')
-      + companies + areasByCompany
+      + companies + sitesByCompany
       + `<div class="grid cols-2" style="align-items:start">${cc}${ac}</div>`
       + loc;
   }
@@ -198,8 +202,9 @@
   function sapBody() {
     const cfg = ui.card({
       title: `${icon('settings_ethernet')} SAP S/4HANA connection`,
-      sub: 'Integration endpoint and schedule. <span class="muted">M8</span>',
-      body: `<div class="grid cols-2">
+      sub: 'Integration endpoint and schedule. <span class="muted">M8</span> — <b>mock only</b> (SOW 3.1.1; no live SAP sync in this prototype).',
+      body: ui.callout('warn', '<b>Prototype mock.</b> Sync buttons and message log simulate SAP OData — production requires backend integration per SOW 3.1.1.')
+        + `<div class="grid cols-2">
           ${ui.field({ label: 'OData / API endpoint', name: 'sapEndpoint', value: 'https://s4hana.wecga.co.th/sap/opu/odata/sap/ZASSET_SRV' })}
           ${ui.field({ label: 'SAP client', name: 'sapClient', value: '100' })}
           ${ui.field({ label: 'Sync schedule', name: 'sapSchedule', type: 'select', value: 'Nightly 02:00', options: ['Realtime (event)', 'Hourly', 'Nightly 02:00', 'Manual only'] })}
@@ -271,7 +276,7 @@
               ${ui.field({ label: 'Full name', name: 'name', required: true })}
               ${ui.field({ label: 'Email', name: 'email', type: 'email', required: true })}
               ${ui.field({ label: 'Role', name: 'role', type: 'select', options: Object.entries(App.ROLES).map(([v, l]) => ({ value: v, label: l })) })}
-              ${ui.field({ label: 'GA area (GA roles)', name: 'area', type: 'select', options: [{ value: '', label: '- none -' }].concat(App.store.areas.map(a => ({ value: a.code, label: `${a.code} - ${a.name}` }))) })}
+              ${ui.field({ label: 'GA project (GA roles)', name: 'area', type: 'select', options: [{ value: '', label: '- none -' }].concat(App.projectOptions(App.session.company).map(p => ({ value: p, label: p }))) })}
             </div>`,
           actions: [
             { label: 'Cancel', kind: 'text' },

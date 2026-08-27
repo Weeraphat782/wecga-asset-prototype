@@ -33,7 +33,7 @@
     : /sap|sync/i.test(a) ? 'sync'
     : /approv/i.test(a) ? 'verified'
     : /user/i.test(a) ? 'person'
-    : /ticket|spawn/i.test(a) ? 'confirmation_number'
+    : /ticket|service request|spawn/i.test(a) ? 'confirmation_number'
     : /lost|write/i.test(a) ? 'delete_sweep'
     : 'history';
 

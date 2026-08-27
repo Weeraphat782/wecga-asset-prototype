@@ -32,8 +32,10 @@
     { key: 'nbv', label: 'NBV', group: 'Accounting', fmt: 'money', num: true },
     { key: 'costCenter', label: 'Cost Center', group: 'Accounting' },
     { key: 'costCenterName', label: 'Cost Center Name', group: 'Accounting' },
+    { key: 'po', label: 'PO number', group: 'Accounting' },
     // Location
     { key: 'location', label: 'Location', group: 'Location' },
+    { key: 'locationBasis', label: 'Location basis', group: 'Location', opts: ['SAP', 'employee'] },
     { key: 'locationDesc', label: 'Location Desc.', group: 'Location' },
     { key: 'room', label: 'Room', group: 'Location' },
     { key: 'lat', label: 'Latitude', group: 'Location' },
@@ -41,6 +43,12 @@
     { key: 'address', label: 'Address', group: 'Location' },
     { key: 'district', label: 'District', group: 'Location' },
     { key: 'province', label: 'Province', group: 'Location' },
+    // WeCGA site hierarchy (separate from SAP location codes)
+    { key: 'companyCode', label: 'Company', group: 'Site location' },
+    { key: 'project', label: 'Project', group: 'Site location' },
+    { key: 'building', label: 'Building', group: 'Site location' },
+    { key: 'floor', label: 'Floor', group: 'Site location' },
+    { key: 'unit', label: 'Unit', group: 'Site location' },
     // Evaluation
     { key: 'eva4', label: 'Eva4', group: 'Evaluation' },
     { key: 'eva4Desc', label: 'Eva 4 Desc.', group: 'Evaluation' },
@@ -94,7 +102,7 @@
   App.assetTimeline = (id) => {
     const ev = [];
     App.store.audit.filter(x => x.target === id).forEach(x => ev.push({ ts: x.ts, title: x.action, meta: `${x.actor}${x.detail ? ' - ' + x.detail : ''}` }));
-    App.store.tickets.filter(t => t.assetId === id).forEach(t => ev.push({ ts: t.created, title: `${t.type} ticket ${t.id}`, meta: t.title, icon: 'confirmation_number' }));
+    App.store.tickets.filter(t => t.assetId === id).forEach(t => ev.push({ ts: t.created, title: `${t.type} service request ${t.id}`, meta: t.title, icon: 'confirmation_number' }));
     App.store.countResults.filter(c => c.assetId === id).forEach(c => ev.push({ ts: c.date, title: 'Count: ' + c.outcome.replace('_', ' '), meta: c.note || '', icon: 'fact_check' }));
     return ev.sort((a, b) => new Date(b.ts) - new Date(a.ts)).map(e => ({ title: e.title, meta: `${fmt.datetime(e.ts)} - ${e.meta}`, icon: e.icon }));
   };
@@ -111,10 +119,7 @@
       if (state.source && a.source !== state.source) return false;
       if (state.tag && a.tagStatus !== state.tag) return false;
       if (state.count && a.countStatus !== state.count) return false;
-      if (state.q) {
-        const hay = [App.assetCode(a), a.desc1, a.desc2, a.serial, a.owner && a.owner.name, a.locationDesc].join(' ').toLowerCase();
-        if (!hay.includes(state.q.toLowerCase())) return false;
-      }
+      if (state.q && !App.assetMatches(a, state.q)) return false;
       return true;
     });
   }
@@ -129,6 +134,7 @@
         return { key: k, label: f.label, cls: f.num ? 'num' : '', render: r => r === undefined ? '' : fieldVal(r, f) };
       });
       cols.push({ key: '_st', label: 'Tag / Count', render: r => ui.statusChip(r.tagStatus) + ' ' + ui.statusChip(r.countStatus) });
+      cols.push({ key: '_qr', label: '', render: r => `<button type="button" class="btn text sm" data-act="printQr" data-id="${r.id}">${App.icon('print')} QR</button>` });
       cols.unshift({ key: '_src', label: 'Source', render: sourceChip });
       cols.unshift({ key: '_img', label: '', render: r => App.assetImg(r, { w: 92, h: 68, cls: 'asset-thumb' }) });
 
@@ -169,6 +175,11 @@
       };
       const csv = root.querySelector('#csvBtn'); if (csv) csv.onclick = exp;
       const xls = root.querySelector('#xlsBtn'); if (xls) xls.onclick = exp;
+
+      root.querySelectorAll('[data-act="printQr"]').forEach(b => b.onclick = (e) => {
+        e.stopPropagation();
+        App.printAssetQr(b.getAttribute('data-id'));
+      });
 
       const colBtn = root.querySelector('#colBtn');
       if (colBtn) colBtn.onclick = () => {
@@ -214,10 +225,10 @@
       const tl = App.assetTimeline(a.id);
 
       const actions = `
-        <button class="btn tonal sm" data-nav="#/scan?asset=${a.id}">${App.icon('photo_camera')} Scan & Record</button>
-        <button class="btn tonal sm" data-nav="#/movement?asset=${a.id}">${App.icon('swap_horiz')} Move</button>
-        <button class="btn outline sm" data-nav="#/writeoff?asset=${a.id}">${App.icon('delete_sweep')} Write-off</button>
-        <button class="btn outline sm" id="printBtn">${App.icon('print')} Print</button>`;
+        <button type="button" class="btn tonal sm" data-nav="#/scan?asset=${a.id}">${App.icon('photo_camera')} Scan & Record</button>
+        <button type="button" class="btn tonal sm" id="printQrBtn">${App.icon('print')} Print QR</button>
+        <button type="button" class="btn tonal sm" data-nav="#/movement?asset=${a.id}">${App.icon('swap_horiz')} Move</button>
+        <button type="button" class="btn outline sm" data-nav="#/writeoff?asset=${a.id}">${App.icon('delete_sweep')} Write-off</button>`;
 
       return ui.pageHead({
         title: App.assetTitle(a),
@@ -231,14 +242,16 @@
           </div>
           <div>
             ${ui.card({ title: `${App.icon('photo_library')} Photos (metadata burned in)`, sub: 'QR code, Serial number, whole asset - carries Lat/Long, district, province, timestamp (p.3 8.2-8.5)', body: `<div class="grid cols-3">${photos}</div>` })}
-            ${ui.card({ title: `${App.icon('qr_code_2')} Asset Tag`, body: `<div style="display:flex;gap:18px;align-items:center">${ui.qr(App.assetCode(a))}<div class="kv" style="grid-template-columns:auto 1fr"><dt>Owner</dt><dd>${App.ownerLabel(a)}</dd><dt>Owner email</dt><dd>${App.esc(a.owner ? a.owner.email : '-')}</dd><dt>Org head email</dt><dd>${App.esc(a.orgHeadEmail || '-')}</dd><dt>Warranty</dt><dd>${App.esc(a.warranty || '-')}</dd></div></div>` })}
-            ${ui.card({ title: `${App.icon('confirmation_number')} Related tickets`, body: tickets.length ? ui.table({ columns: [{ key: 'id', label: 'Ticket' }, { key: 'type', label: 'Type' }, { key: 'status', label: 'Status', render: r => ui.statusChip(r.status) }], rows: tickets, rowLink: r => '#/' + (r.type.startsWith('Write-off') ? 'writeoff' : r.type === 'Transfer' || r.type === 'Borrow' || r.type === 'Repair' ? 'movement' : r.type === 'Registration' ? 'registration' : r.type === 'Handover' ? 'handover' : 'tagging') + '/' + r.id }) : '<div class="muted">No tickets</div>' })}
+            ${ui.card({ title: `${App.icon('qr_code_2')} Asset Tag`, actions: `<button type="button" class="btn text sm" id="printQrCardBtn">${App.icon('print')} Print QR</button>`, body: `<div style="display:flex;gap:18px;align-items:center">${ui.qr(App.assetCode(a))}<div class="kv" style="grid-template-columns:auto 1fr"><dt>Owner</dt><dd>${App.ownerLabel(a)}</dd><dt>Owner email</dt><dd>${App.esc(a.owner ? a.owner.email : '-')}</dd><dt>Org head email</dt><dd>${App.esc(a.orgHeadEmail || '-')}</dd><dt>Warranty</dt><dd>${App.esc(a.warranty || '-')}</dd></div></div>` })}
+            ${ui.card({ title: `${App.icon('confirmation_number')} Related service requests`, body: tickets.length ? ui.table({ columns: [{ key: 'id', label: 'Service request' }, { key: 'type', label: 'Type' }, { key: 'status', label: 'Status', render: r => ui.statusChip(r.status) }], rows: tickets, rowLink: r => '#/' + (r.type.startsWith('Write-off') ? 'writeoff' : r.type === 'Transfer' || r.type === 'Borrow' || r.type === 'Repair' ? 'movement' : r.type === 'Registration' ? 'registration' : r.type === 'Handover' ? 'handover' : 'tagging') + '/' + r.id }) : '<div class="muted">No service requests</div>' })}
             ${ui.card({ title: `${App.icon('history')} Activity log (timeline)`, sub: 'Requirement p.11: log activity as a timeline', body: tl.length ? ui.timeline(tl) : '<div class="muted">No activity</div>' })}
           </div>
         </div>`;
     },
-    mount(root) {
-      const p = root.querySelector('#printBtn'); if (p) p.onclick = () => window.print();
+    mount(root, ctx) {
+      const printQr = () => App.printAssetQr(ctx.params.id);
+      const p = root.querySelector('#printQrBtn'); if (p) p.onclick = printQr;
+      const pc = root.querySelector('#printQrCardBtn'); if (pc) pc.onclick = printQr;
     },
   });
 })();

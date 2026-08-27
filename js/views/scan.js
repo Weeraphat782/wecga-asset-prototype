@@ -16,18 +16,11 @@
   }
 
   function taggingTicket(a) {
-    return App.store.tickets.find(t => t.assetId === a.id && t.type === 'Tagging');
+    return App.store.tickets.find(t => t.type === 'Tagging' && App.ticketAssetIds(t).includes(a.id));
   }
 
   function photoTile(type, a, ts, matches) {
-    const ic = type === 'QR code' ? 'qr_code_2' : type === 'Serial number' ? 'tag' : 'photo_camera';
-    const meta = `LAT ${a.lat} LNG ${a.lng}<br>${App.esc(a.district || '')}, ${App.esc(a.province || '')}<br>${fmt.datetime(ts)}`;
-    return `<div class="photo-tile">
-      ${type === 'QR code' ? `<span class="material-symbols-outlined ph-icon">${ic}</span>` : App.assetImg(a, { w: 320, h: 240 })}
-      <span class="ph-tag">${App.esc(type)}</span>
-      <span class="ph-tag" style="left:auto;right:6px;background:var(--md-primary)">${icon('check')}</span>
-      <div class="ph-overlay">${meta}</div>
-    </div>`;
+    return ui.photoTile(a, type, ts);
   }
 
   App.registerView('#/scan', {
@@ -54,7 +47,8 @@
 
       // ---- asset chosen: the mobile first-record flow ----
       const ts = new Date().toISOString();
-      const gpsMatch = !state.simulateMismatch;
+      const movable = a.locationBasis === 'employee';
+      const gpsMatch = movable || !state.simulateMismatch;
       const tkt = taggingTicket(a);
       const ownerOrg = a.owner && a.owner.type === 'org';
 
@@ -80,17 +74,21 @@
         </div>
       </div>`;
 
-      // 8.3 location must match SAP
+      // 8.3 location must match SAP (or employee org for movable equipment)
       const step83 = `<div class="card">
-        <div class="card-title">${icon('location_on')} 8.3 Location matches SAP</div>
-        <label class="chip outline" style="cursor:pointer;margin-bottom:8px"><input type="checkbox" id="simMismatch" ${state.simulateMismatch ? 'checked' : ''} style="margin-right:6px">Simulate GPS mismatch</label>
+        <div class="card-title">${icon('location_on')} 8.3 ${movable ? 'Location per employee org (movable)' : 'Location matches SAP'}</div>
+        ${movable ? '' : `<label class="chip outline" style="cursor:pointer;margin-bottom:8px"><input type="checkbox" id="simMismatch" ${state.simulateMismatch ? 'checked' : ''} style="margin-right:6px">Simulate GPS mismatch</label>`}
         <dl class="kv" style="grid-template-columns:auto 1fr">
           <dt>Photo GPS</dt><dd class="mono">${a.lat}, ${a.lng}</dd>
-          <dt>SAP Location</dt><dd class="mono">${App.esc(a.location || '-')} - ${App.esc(a.locationDesc || '-')}</dd>
+          ${movable
+            ? `<dt>Employee org</dt><dd>${App.esc(a.costCenterName || (a.owner && a.owner.name) || '-')}</dd>`
+            : `<dt>SAP Location</dt><dd class="mono">${App.esc(a.location || '-')} - ${App.esc(a.locationDesc || '-')}</dd>`}
         </dl>
-        ${gpsMatch
-          ? ui.callout('info', `${icon('check_circle')} GPS matches SAP Location - <b>${App.esc(a.locationDesc || '')}</b>`, 'check_circle')
-          : ui.callout('warn', 'GPS does not match SAP Location - flag for GA verification before submit.')}
+        ${movable
+          ? ui.callout('info', `${icon('check_circle')} Movable equipment - location recorded per the employee's organization (<b>${App.esc(a.costCenterName || '')}</b>), not fixed SAP Location (p.1 M3).`, 'check_circle')
+          : (gpsMatch
+            ? ui.callout('info', `${icon('check_circle')} GPS matches SAP Location - <b>${App.esc(a.locationDesc || '')}</b>`, 'check_circle')
+            : ui.callout('warn', 'GPS does not match SAP Location - flag for GA verification before submit.'))}
       </div>`;
 
       // 8.4 AI checks (mocked - open question)
@@ -128,7 +126,7 @@
           { label: 'QR code photo captured', state: 'pass' },
           { label: 'Serial number photo captured', state: a.serial ? 'pass' : 'pending', note: a.serial ? '' : 'no serial on record' },
           { label: 'Photo matches Description', state: 'pass', note: App.esc([a.desc1, a.desc2].filter(Boolean).join(' ')) },
-          { label: 'Location correct per SAP (Lat/Long matches SAP Location)', state: gpsMatch ? 'pass' : 'fail' },
+          { label: movable ? 'Location per employee org (movable equipment)' : 'Location correct per SAP (Lat/Long matches SAP Location)', state: gpsMatch ? 'pass' : 'fail' },
           { label: 'Serial correct', state: 'pass' },
           { label: 'Owner Name correct', state: 'pass', note: App.esc(a.owner ? a.owner.name : '-') },
           { label: 'Organization correct', state: ownerOrg ? 'pass' : 'pass', note: App.esc(a.orgName || (a.owner ? a.owner.name : '-')) },
@@ -149,7 +147,7 @@
         breadcrumb: [{ label: 'Scan & Record', hash: '#/scan' }, { label: App.assetCode(a) }],
         sub: `First record - ${App.assetTitle(a)}. Page 2-3 item 8 (M3, P1-P6).`,
       })
-      + (tkt ? ui.callout('info', `Linked tagging ticket <b>${tkt.id}</b> - submitting advances it and marks the asset <b>Tagged</b>.`) : '')
+      + (tkt ? ui.callout('info', `Linked tagging service request <b>${tkt.id}</b> - submitting advances it and marks the asset <b>Tagged</b>.`) : '')
       + ui.phone(inner)
       + reuse;
     },
@@ -179,9 +177,15 @@
     }));
     a.tagStatus = 'Tagged';
     const tkt = taggingTicket(a);
-    if (tkt && tkt.status !== 'Completed') App.advanceTicket(tkt, 'First record submitted (scan + 3 photos)');
+    const wasOpen = tkt && tkt.status !== 'Completed';
+    if (tkt && tkt.status !== 'Completed') {
+      const ids = App.ticketAssetIds(tkt);
+      const left = ids.filter(id => (App.asset(id) || {}).tagStatus !== 'Tagged').length;
+      if (!left) App.advanceTicket(tkt, 'First record submitted for all ' + ids.length + ' assets');
+      else tkt.history.push({ ts, actor: App.currentUser().name, step: 'First record', note: (ids.length - left) + '/' + ids.length + ' recorded' });
+    }
     App.audit({ action: 'First record submitted', target: a.id, detail: '3 photos + GPS embedded' + (tkt ? ' (' + tkt.id + ')' : '') });
     ui.toast('First record saved for ' + App.assetCode(a), 'cloud_done');
-    App.navigate('#/assets/' + a.id);
+    App.navigate(wasOpen ? '#/tagging/' + tkt.id : '#/assets/' + a.id);
   }
 })();
